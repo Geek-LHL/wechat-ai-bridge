@@ -7,7 +7,6 @@ A [Claude Code](https://claude.ai/claude-code) Skill that bridges personal WeCha
 ## Features
 
 - **Real-time progress updates** — see Claude's tool calls (🔧 Bash, 📖 Read, 🔍 Glob…) as they happen
-- **Thinking preview** — get a 💭 preview of Claude's reasoning before each tool call
 - **Interrupt support** — send a new message mid-query to abort and redirect Claude
 - **System prompt** — set a persistent prompt via `/prompt` (e.g. "Reply in Chinese")
 - **Auto-approved tool access** — all tools run without manual approval for seamless operation
