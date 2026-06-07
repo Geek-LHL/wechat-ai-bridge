@@ -198,12 +198,9 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
   }
 
   // --- Execute query & accumulate output ---
-  const MAX_THINKING_PREVIEW = 300; // max chars per thinking block shown to user
   let sessionId = "";
   const textParts: string[] = [];
   let errorMessage: string | undefined;
-  let thinkingBuf = "";      // accumulates current thinking block
-  let thinkingCapped = false; // true once we've emitted the preview for this block
 
   const QUERY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -248,33 +245,12 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
         }
         case "stream_event": {
           const evt = (message as any).event;
-          if (evt?.type === "content_block_start") {
-            // Reset thinking state at the start of each new block
-            if (evt?.content_block?.type === "thinking") {
-              thinkingBuf = "";
-              thinkingCapped = false;
-            }
-          } else if (evt?.type === "content_block_delta") {
+          if (evt?.type === "content_block_delta") {
             const deltaType: string = evt.delta?.type ?? "";
             if (deltaType === "text_delta" && onText) {
               const delta: string = evt.delta.text;
               if (delta) await onText(delta);
-            } else if (deltaType === "thinking_delta" && onText && !thinkingCapped) {
-              // Accumulate thinking text; emit a short preview once we hit the cap
-              thinkingBuf += (evt.delta.thinking as string) ?? "";
-              if (thinkingBuf.length >= MAX_THINKING_PREVIEW) {
-                thinkingCapped = true;
-                await onText("💭 " + thinkingBuf.slice(0, MAX_THINKING_PREVIEW).trim() + "…\n");
-                thinkingBuf = "";
-              }
             }
-          } else if (evt?.type === "content_block_stop") {
-            // Block ended before hitting the cap — emit what we have (if non-empty)
-            if (thinkingBuf.trim() && onText && !thinkingCapped) {
-              await onText("💭 " + thinkingBuf.trim() + "\n");
-            }
-            thinkingBuf = "";
-            thinkingCapped = false;
           }
           break;
         }
