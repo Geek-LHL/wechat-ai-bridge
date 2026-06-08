@@ -336,8 +336,8 @@ async function sendToClaude(
   // Record user message in chat history
   sessionStore.addChatMessage(session, 'user', userText || '(图片)');
 
-  // Trigger WeChat typing indicator
-  await sender.sendGenerating(fromUserId, contextToken);
+  // Trigger WeChat typing indicator (fire-and-forget — cosmetic only)
+  sender.sendGenerating(fromUserId, contextToken).catch(() => {});
 
   try {
     // Download image if present
