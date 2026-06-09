@@ -335,6 +335,9 @@ async function sendToClaude(
   const abortController = new AbortController();
   activeControllers.set(account.accountId, abortController);
 
+  // Flush timer for streaming text to WeChat during query (declared here for finally cleanup)
+  let flushTimer: ReturnType<typeof setInterval> | undefined;
+
   // Record user message in chat history
   sessionStore.addChatMessage(session, 'user', userText || '(图片)');
 
@@ -377,18 +380,28 @@ async function sendToClaude(
 
     let textBuffer = '';
     let anySent = false;
+    let flushing = false;
 
     // Send accumulated text output
     async function flushText(): Promise<void> {
-      if (!textBuffer.trim()) return;
+      if (!textBuffer.trim() || flushing) return;
+      flushing = true;
       const toSend = textBuffer.trim();
       textBuffer = '';
-      const chunks = splitMessage(toSend);
-      for (const chunk of chunks) {
-        anySent = true;
-        await sender.sendText(fromUserId, contextToken, chunk);
+      try {
+        const chunks = splitMessage(toSend);
+        for (const chunk of chunks) {
+          anySent = true;
+          await sender.sendText(fromUserId, contextToken, chunk);
+        }
+      } finally {
+        flushing = false;
       }
     }
+
+    // Periodically flush streamed text to WeChat during query
+    const FLUSH_INTERVAL_MS = 3000;
+    flushTimer = setInterval(() => { flushText(); }, FLUSH_INTERVAL_MS);
 
     const queryOptions: QueryOptions = {
       prompt,
@@ -415,7 +428,8 @@ async function sendToClaude(
       Object.assign(result, retryResult);
     }
 
-    // Flush any remaining buffered content
+    // Stop periodic flush and send any remaining buffered content
+    clearInterval(flushTimer);
     await flushText();
 
     // Send result back to WeChat
@@ -455,6 +469,7 @@ async function sendToClaude(
     session.state = 'idle';
     sessionStore.save(account.accountId, session);
   } finally {
+    clearInterval(flushTimer);
     stopTyping();
     // Clean up the abort controller if it's still ours
     if (activeControllers.get(account.accountId) === abortController) {
