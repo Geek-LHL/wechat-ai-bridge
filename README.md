@@ -26,8 +26,8 @@ A [Claude Code](https://claude.ai/claude-code) Skill that bridges personal WeCha
 - Node.js >= 18
 - macOS or Linux
 - Personal WeChat account (QR code binding required)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with `@anthropic-ai/claude-agent-sdk` installed
-  > **Note:** The SDK supports third-party API providers (e.g. OpenRouter, AWS Bedrock, custom OpenAI-compatible endpoints) — set `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` accordingly.
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed and authenticated
+  > **Note:** Claude Code supports third-party API providers (e.g. OpenRouter, AWS Bedrock, custom OpenAI-compatible endpoints) — set `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` accordingly.
 
 ## Installation
 
@@ -83,24 +83,26 @@ npm run daemon -- logs     # View recent logs
 | `/help` | Show available commands |
 | `/clear` | Clear current session (start fresh) |
 | `/reset` | Full reset including working directory |
+| `/stop` | Stop current query and discard queued messages |
 | `/model <name>` | Switch Claude model |
 | `/prompt [text]` | View or set a system prompt appended to every query |
 | `/status` | View current session state |
 | `/cwd [path]` | View or switch working directory |
 | `/skills` | List installed Claude Code skills |
 | `/history [n]` | View last N chat messages |
-| `/compact` | Start a new SDK session (clear token context) |
+| `/compact` | Start a new CLI session (clear token context) |
 | `/undo [n]` | Remove last N messages from history |
+| `/version` | Show version info |
 | `/<skill> [args]` | Trigger any installed skill |
 
 ## How It Works
 
 ```
-WeChat (phone) ←→ ilink bot API ←→ Node.js daemon ←→ Claude Code SDK (local)
+WeChat (phone) ←→ ilink bot API ←→ Node.js daemon ←→ Claude Code CLI (local)
 ```
 
 - The daemon long-polls WeChat's ilink bot API for new messages
-- Messages are forwarded to Claude Code via `@anthropic-ai/claude-agent-sdk`
+- Messages are forwarded to Claude Code by spawning the `claude` CLI with `--output-format stream-json`
 - Tool calls run silently in the background while Claude works
 - Claude's text output is streamed to WeChat in real-time; tool calls run silently
 - Responses are sent back to WeChat with automatic rate-limit retry
@@ -113,7 +115,7 @@ All data is stored in `~/.wechat-claude-code/`:
 ```
 ~/.wechat-claude-code/
 ├── accounts/       # WeChat account credentials (one JSON per account)
-├── config.env      # Global config (working directory, model, system prompt)
+├── config.json     # Global config (working directory, model, system prompt)
 ├── sessions/       # Session data (one JSON per account)
 ├── get_updates_buf # Message polling sync buffer
 └── logs/           # Rotating logs (daily, 30-day retention)

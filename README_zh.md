@@ -26,8 +26,8 @@
 - Node.js >= 18
 - macOS 或 Linux
 - 个人微信账号（需扫码绑定）
-- 已安装 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)（含 `@anthropic-ai/claude-agent-sdk`）
-  > **注意：** 该 SDK 支持第三方 API 提供商（如 OpenRouter、AWS Bedrock、自定义 OpenAI 兼容接口）——按需设置 `ANTHROPIC_BASE_URL` 与 `ANTHROPIC_API_KEY` 即可。
+- 已安装 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI 并完成认证
+  > **注意：** Claude Code 支持第三方 API 提供商（如 OpenRouter、AWS Bedrock、自定义 OpenAI 兼容接口）——按需设置 `ANTHROPIC_BASE_URL` 与 `ANTHROPIC_API_KEY` 即可。
 
 ## 安装
 
@@ -83,24 +83,26 @@ npm run daemon -- logs     # 查看最近日志
 | `/help` | 显示帮助 |
 | `/clear` | 清除当前会话（重新开始） |
 | `/reset` | 完全重置（包括工作目录等设置） |
+| `/stop` | 停止当前查询并清空排队消息 |
 | `/model <名称>` | 切换 Claude 模型 |
 | `/prompt [内容]` | 查看或设置系统提示词（全局生效） |
 | `/status` | 查看当前会话状态 |
 | `/cwd [路径]` | 查看或切换工作目录 |
 | `/skills` | 列出已安装的 Claude Code Skill |
 | `/history [数量]` | 查看最近 N 条对话记录 |
-| `/compact` | 压缩上下文（开始新 SDK 会话，保留历史） |
+| `/compact` | 压缩上下文（开始新 CLI 会话，保留历史） |
 | `/undo [数量]` | 撤销最近 N 条对话 |
+| `/version` | 查看版本信息 |
 | `/<skill> [参数]` | 触发任意已安装的 Skill |
 
 ## 工作原理
 
 ```
-微信（手机） ←→ ilink bot API ←→ Node.js 守护进程 ←→ Claude Code SDK（本地）
+微信（手机） ←→ ilink bot API ←→ Node.js 守护进程 ←→ Claude Code CLI（本地）
 ```
 
 - 守护进程通过长轮询监听微信 ilink bot API 的新消息
-- 消息通过 `@anthropic-ai/claude-agent-sdk` 转发给 Claude Code
+- 消息通过 spawn `claude` CLI（`--output-format stream-json`）转发给 Claude Code
 - 工具调用在 Claude 工作时后台静默执行
 - Claude 的文字输出实时流式发送到微信，工具调用静默执行
 - 回复发送回微信，限频时自动重试
@@ -113,7 +115,7 @@ npm run daemon -- logs     # 查看最近日志
 ```
 ~/.wechat-claude-code/
 ├── accounts/       # 微信账号凭证（每个账号一个 JSON）
-├── config.env      # 全局配置（工作目录、模型、系统提示词）
+├── config.json     # 全局配置（工作目录、模型、系统提示词）
 ├── sessions/       # 会话数据（每个账号一个 JSON）
 ├── get_updates_buf # 消息轮询同步缓冲
 └── logs/           # 运行日志（每日轮转，保留 30 天）
