@@ -289,6 +289,7 @@ async function handleMessage(
   // Filter: only user messages with required fields
   if (msg.message_type !== MessageType.USER) return;
   if (!msg.from_user_id || !msg.item_list) return;
+  if (account.userId && msg.from_user_id !== account.userId) return;
 
   const contextToken = msg.context_token ?? '';
   const fromUserId = msg.from_user_id;
