@@ -493,12 +493,9 @@ async function sendToClaude(
     let textBuffer = '';
     let anySent = false;
     let lastSentTime = Date.now();
-    let lastBufferChangeTime = Date.now();
 
-    const MIN_FLUSH_LEN = 200;
+    const MIN_BATCH_FLUSH_LEN = 30;
     const SOFT_FLUSH_LIMIT = 1800;
-    const MAX_BUFFER_AGE_MS = 3000;
-    const MIN_BATCH_FLUSH_LEN = 80;
 
     /** Check if buffer ends at a structural boundary (double newline or horizontal rule). */
     function endsWithStructuralBoundary(text: string): boolean {
@@ -513,7 +510,6 @@ async function sendToClaude(
         const toSend = textBuffer.trim();
         if (!toSend) return;
         textBuffer = '';
-        lastBufferChangeTime = Date.now();
         const chunks = splitMessage(toSend);
         for (const chunk of chunks) {
           anySent = true;
@@ -526,14 +522,9 @@ async function sendToClaude(
       return flushChain;
     }
 
-    // Safety net: flush stale buffers that haven't been sent due to no structural boundary
+    // Safety net: send keepalive if nothing was sent for 5 minutes
     const SILENCE_WARNING_MS = 5 * 60 * 1000;
     flushTimer = setInterval(() => {
-      // Only flush when buffer is stale (no new content for MAX_BUFFER_AGE_MS)
-      if (textBuffer.length > MIN_FLUSH_LEN && Date.now() - lastBufferChangeTime > MAX_BUFFER_AGE_MS) {
-        flushText();
-      }
-      // Send a keepalive if nothing was sent for 5 minutes (repeats every 5 min)
       if (Date.now() - lastSentTime > SILENCE_WARNING_MS) {
         sender.sendText(fromUserId, contextToken, '我还在处理，请稍等一下').catch(() => {});
         lastSentTime = Date.now();
@@ -553,7 +544,6 @@ async function sendToClaude(
       images,
       onText: async (delta: string) => {
         textBuffer += delta;
-        lastBufferChangeTime = Date.now();
 
         // Flush at structural boundaries (only if buffer is substantial) or when approaching size limit
         const shouldFlush =
