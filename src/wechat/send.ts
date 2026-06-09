@@ -67,9 +67,23 @@ export function createSender(api: WeChatApi, botAccountId: string) {
           break;
         }
       }
+
+      // Send CANCEL to tell WeChat we're done typing
+      if (!ticket) return;
+      try {
+        await api.sendTyping({
+          ilink_user_id: toUserId,
+          typing_ticket: ticket,
+          status: TypingStatus.CANCEL,
+        });
+      } catch {
+        // ignore
+      }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }
 
   async function sendText(toUserId: string, contextToken: string, text: string): Promise<void> {
