@@ -59,6 +59,103 @@ function cleanupTempFiles(paths: string[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// Stream parser (extracted for testability)
+// ---------------------------------------------------------------------------
+
+export interface StreamParserState {
+  sessionId: string;
+  textParts: string[];
+  errorMessage?: string;
+  trackingSkill: boolean;
+  skillInputAccum: string;
+}
+
+export interface StreamParserCallbacks {
+  onText?: (text: string) => void;
+  onBlockEnd?: () => void;
+}
+
+export function handleStreamLine(
+  line: string,
+  state: StreamParserState,
+  callbacks: StreamParserCallbacks,
+): void {
+  if (!line.trim()) return;
+  let obj: any;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  switch (obj.type) {
+    case 'system': {
+      if (obj.subtype === 'init' && obj.session_id) {
+        state.sessionId = obj.session_id;
+      }
+      break;
+    }
+    case 'assistant': {
+      const content = obj.message?.content;
+      if (Array.isArray(content)) {
+        const text = content
+          .filter((b: any) => b.type === 'text')
+          .map((b: any) => b.text ?? '')
+          .join('');
+        if (text) state.textParts.push(text);
+      }
+      break;
+    }
+    case 'stream_event': {
+      const evt = obj.event;
+      if (evt?.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+        if (evt.content_block.name === 'Skill') {
+          state.trackingSkill = true;
+          state.skillInputAccum = '';
+        }
+      } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+        const delta: string = evt.delta.text;
+        if (delta && callbacks.onText) {
+          callbacks.onText(delta);
+        }
+      } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && state.trackingSkill) {
+        state.skillInputAccum += evt.delta.partial_json ?? '';
+        try {
+          const parsed = JSON.parse(state.skillInputAccum);
+          if (parsed.skill) {
+            const msg = `\n正在调用 ${parsed.skill} 技能\n\n`;
+            if (callbacks.onText) callbacks.onText(msg);
+            state.trackingSkill = false;
+          }
+        } catch {
+          // JSON not complete yet
+        }
+      } else if (evt?.type === 'content_block_stop') {
+        state.trackingSkill = false;
+        if (callbacks.onBlockEnd) callbacks.onBlockEnd();
+      }
+      break;
+    }
+    case 'result': {
+      if (obj.result && typeof obj.result === 'string') {
+        const combined = state.textParts.join('');
+        if (!combined.includes(obj.result)) {
+          state.textParts.push(obj.result);
+        }
+      }
+      if (obj.subtype === 'error' || (obj.errors && obj.errors.length > 0)) {
+        const errors = obj.errors ?? [obj.error_message ?? 'Unknown error'];
+        state.errorMessage = Array.isArray(errors) ? errors.join('; ') : String(errors);
+        logger.error('CLI returned error result', { errors });
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Core function
 // ---------------------------------------------------------------------------
 
@@ -104,9 +201,6 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
   }
 
   // Accumulators
-  let sessionId = '';
-  const textParts: string[] = [];
-  let errorMessage: string | undefined;
   let child: ChildProcess | undefined;
   let settled = false;
 
@@ -140,10 +234,10 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     const timeoutId = setTimeout(() => {
       logger.warn('Claude CLI query timed out, killing process');
       child!.kill('SIGTERM');
-      const partialText = textParts.join('\n').trim();
+      const partialText = parserState.textParts.join('\n').trim();
       finish({
         text: partialText,
-        sessionId,
+        sessionId: parserState.sessionId,
         error: partialText ? undefined : 'Claude query timed out after 60 minutes',
       });
     }, QUERY_TIMEOUT_MS);
@@ -152,8 +246,8 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     const onAbort = () => {
       logger.info('Claude CLI query aborted');
       child!.kill('SIGTERM');
-      const partialText = textParts.join('\n').trim();
-      finish({ text: partialText, sessionId });
+      const partialText = parserState.textParts.join('\n').trim();
+      finish({ text: partialText, sessionId: parserState.sessionId });
     };
     abortController?.signal.addEventListener('abort', onAbort, { once: true });
 
@@ -164,86 +258,18 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
       stderrParts.push(chunk);
     });
 
-    // Parse NDJSON from stdout
-    let skillInputAccum = '';
-    let trackingSkill = false;
+    // Parse NDJSON from stdout (logic in handleStreamLine for testability)
+    const parserState: StreamParserState = {
+      sessionId: '',
+      textParts: [],
+      trackingSkill: false,
+      skillInputAccum: '',
+    };
+    const parserCallbacks: StreamParserCallbacks = { onText, onBlockEnd };
 
     const rl = createInterface({ input: child.stdout! });
     rl.on('line', (line: string) => {
-      if (!line.trim()) return;
-      let obj: any;
-      try {
-        obj = JSON.parse(line);
-      } catch {
-        // Skip unparseable lines
-        return;
-      }
-
-      switch (obj.type) {
-        case 'system': {
-          if (obj.subtype === 'init' && obj.session_id) {
-            sessionId = obj.session_id;
-          }
-          break;
-        }
-        case 'assistant': {
-          const content = obj.message?.content;
-          if (Array.isArray(content)) {
-            const text = content
-              .filter((b: any) => b.type === 'text')
-              .map((b: any) => b.text ?? '')
-              .join('');
-            if (text) textParts.push(text);
-          }
-          break;
-        }
-        case 'stream_event': {
-          const evt = obj.event;
-          if (evt?.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
-            if (evt.content_block.name === 'Skill') {
-              trackingSkill = true;
-              skillInputAccum = '';
-            }
-          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-            const delta: string = evt.delta.text;
-            if (delta && onText) {
-              Promise.resolve(onText(delta)).catch(() => {});
-            }
-          } else if (evt?.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && trackingSkill) {
-            skillInputAccum += evt.delta.partial_json ?? '';
-            try {
-              const parsed = JSON.parse(skillInputAccum);
-              if (parsed.skill) {
-                const msg = `\n正在调用 ${parsed.skill} 技能\n\n`;
-                if (onText) Promise.resolve(onText(msg)).catch(() => {});
-                trackingSkill = false;
-              }
-            } catch {
-              // JSON not complete yet, keep accumulating
-            }
-          } else if (evt?.type === 'content_block_stop') {
-            trackingSkill = false;
-            if (onBlockEnd) Promise.resolve(onBlockEnd()).catch(() => {});
-          }
-          break;
-        }
-        case 'result': {
-          if (obj.result && typeof obj.result === 'string') {
-            const combined = textParts.join('');
-            if (!combined.includes(obj.result)) {
-              textParts.push(obj.result);
-            }
-          }
-          if (obj.subtype === 'error' || (obj.errors && obj.errors.length > 0)) {
-            const errors = obj.errors ?? [obj.error_message ?? 'Unknown error'];
-            errorMessage = Array.isArray(errors) ? errors.join('; ') : String(errors);
-            logger.error('CLI returned error result', { errors });
-          }
-          break;
-        }
-        default:
-          break;
-      }
+      handleStreamLine(line, parserState, parserCallbacks);
     });
 
     // Handle process exit
@@ -251,35 +277,35 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
       clearTimeout(timeoutId);
       abortController?.signal.removeEventListener('abort', onAbort);
 
-      if (code !== 0 && code !== null && !textParts.length && !errorMessage) {
+      if (code !== 0 && code !== null && !parserState.textParts.length && !parserState.errorMessage) {
         const stderr = stderrParts.join('').trim();
-        errorMessage = stderr || `claude exited with code ${code}`;
+        parserState.errorMessage = stderr || `claude exited with code ${code}`;
         logger.error('Claude CLI exited with error', { code, stderr: stderr.slice(0, 500) });
       }
 
-      const fullText = textParts.join('\n').trim();
+      const fullText = parserState.textParts.join('\n').trim();
 
-      if (!fullText && !errorMessage) {
-        errorMessage = 'Claude returned an empty response.';
+      if (!fullText && !parserState.errorMessage) {
+        parserState.errorMessage = 'Claude returned an empty response.';
       }
 
       logger.info("Claude CLI query completed", {
-        sessionId,
+        sessionId: parserState.sessionId,
         textLength: fullText.length,
-        hasError: !!errorMessage,
+        hasError: !!parserState.errorMessage,
       });
 
       finish({
         text: fullText,
-        sessionId,
-        error: errorMessage,
+        sessionId: parserState.sessionId,
+        error: parserState.errorMessage,
       });
     });
 
     child.on('error', (err: Error) => {
       clearTimeout(timeoutId);
       abortController?.signal.removeEventListener('abort', onAbort);
-      finish({ text: '', sessionId, error: `Failed to spawn claude: ${err.message}` });
+      finish({ text: '', sessionId: parserState.sessionId, error: `Failed to spawn claude: ${err.message}` });
     });
   });
 }
