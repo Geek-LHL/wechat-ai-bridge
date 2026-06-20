@@ -23,6 +23,10 @@ export interface QueryOptions {
   onText?: (text: string) => Promise<void> | void;
   /** Called when a content block ends — use to flush buffered text. */
   onBlockEnd?: () => Promise<void> | void;
+  /** Called when an assistant turn ends, with its stop_reason
+   *  ('tool_use' | 'end_turn' | 'max_tokens' | 'stop_sequence' | 'pause_turn' | ...).
+   *  Use to decide whether the turn's text is interstitial or final answer. */
+  onTurnEnd?: (stopReason: string) => Promise<void> | void;
   /** Optional abort controller to cancel the query (e.g. when user sends a new message). */
   abortController?: AbortController;
 }
@@ -73,6 +77,7 @@ export interface StreamParserState {
 export interface StreamParserCallbacks {
   onText?: (text: string) => void;
   onBlockEnd?: () => void;
+  onTurnEnd?: (stopReason: string) => void;
 }
 
 export function handleStreamLine(
@@ -133,6 +138,8 @@ export function handleStreamLine(
       } else if (evt?.type === 'content_block_stop') {
         state.trackingSkill = false;
         if (callbacks.onBlockEnd) Promise.resolve(callbacks.onBlockEnd()).catch(() => {});
+      } else if (evt?.type === 'message_delta' && evt.delta?.stop_reason) {
+        if (callbacks.onTurnEnd) Promise.resolve(callbacks.onTurnEnd(evt.delta.stop_reason)).catch(() => {});
       }
       break;
     }
@@ -169,6 +176,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     images,
     onText,
     onBlockEnd,
+    onTurnEnd,
     abortController,
   } = options;
 
@@ -265,7 +273,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
       trackingSkill: false,
       skillInputAccum: '',
     };
-    const parserCallbacks: StreamParserCallbacks = { onText, onBlockEnd };
+    const parserCallbacks: StreamParserCallbacks = { onText, onBlockEnd, onTurnEnd };
 
     const rl = createInterface({ input: child.stdout! });
     rl.on('line', (line: string) => {

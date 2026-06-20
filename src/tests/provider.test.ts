@@ -59,3 +59,42 @@ test('handleStreamLine: 空行和非法 JSON 静默跳过', () => {
   handleStreamLine('   ', state, {});
   assert.deepEqual(state.textParts, []);
 });
+
+test('handleStreamLine: message_delta 带 stop_reason 触发 onTurnEnd', () => {
+  const calls: string[] = [];
+  handleStreamLine(
+    JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    }),
+    freshState(),
+    { onTurnEnd: (r) => calls.push(r) },
+  );
+  assert.deepEqual(calls, ['end_turn']);
+});
+
+test('handleStreamLine: message_delta 无 stop_reason 不触发 onTurnEnd', () => {
+  const calls: string[] = [];
+  handleStreamLine(
+    JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'message_delta', delta: {} },
+    }),
+    freshState(),
+    { onTurnEnd: (r) => calls.push(r) },
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('handleStreamLine: tool_use stop_reason 也正常透传', () => {
+  const calls: string[] = [];
+  handleStreamLine(
+    JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+    }),
+    freshState(),
+    { onTurnEnd: (r) => calls.push(r) },
+  );
+  assert.deepEqual(calls, ['tool_use']);
+});
