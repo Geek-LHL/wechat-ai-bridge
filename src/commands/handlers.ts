@@ -272,7 +272,8 @@ export function handleCli(ctx: CommandContext, args: string): CommandResult {
   config.cli = arg;
   saveConfig(config);
 
-  return { reply: `✅ 已切换到 ${target.displayName} (${target.version})\n下次对话起生效，配置已保存`, handled: true };
+  return { reply: `✅ 已切换到 ${target.displayName} (${target.version})
+当前会话已重置，配置已保存`, handled: true };
 }
 
 export function handleUnknown(cmd: string, args: string): CommandResult {

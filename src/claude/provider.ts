@@ -179,7 +179,9 @@ function buildCliArgs(options: {
   const { cli, cwd, resume, model, systemPrompt } = options;
 
   if (cli === 'qodercli' || cli === 'claude') {
-    // claude / qodercli: 工作目录通过 spawn 的 cwd 选项传入，CLI 本身用 -w 参数
+    // 工作目录通过 spawn 的 cwd 选项传入即可，不需要额外参数。
+    // 注意：claude CLI 的 -w 是 --worktree 的简写（创建 git worktree），不是工作目录！
+    // 错误地传入 -w <path> 会导致 "not a git repository" 错误。
     const args: string[] = [
       '-p', '-',
       '--output-format', 'stream-json',
@@ -191,8 +193,7 @@ function buildCliArgs(options: {
     if (resume) args.push('--resume', resume);
     if (model)  args.push('--model', model);
     if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
-    // -w 指定工作目录（与 spawn cwd 保持一致）
-    args.push('-w', cwd);
+    // 不传 -w，cwd 由 spawn 的 cwd 选项控制
     return { cmd: cli, args };
   }
 

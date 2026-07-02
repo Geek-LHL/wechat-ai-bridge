@@ -319,6 +319,15 @@ async function runDaemon(): Promise<void> {
     const next = resolveCli(cliName);
     if (!next) return null;
     activeCli = next;
+    // 不同 CLI 的 session ID 和模型名格式完全不兼容，必须同时清除
+    // （例如 opencode 的 provider/model 格式在 qodercli/claude 中不被识别）
+    const needsSave = !!(session.sdkSessionId || session.model);
+    session.sdkSessionId = undefined;
+    session.model = undefined;
+    if (needsSave) {
+      sessionStore.save(account!.accountId, session);
+      logger.info('Session cleared on CLI switch', { newCli: next.cli });
+    }
     logger.info('CLI switched', { cli: next.cli, version: next.version });
     return next.displayName;
   }
