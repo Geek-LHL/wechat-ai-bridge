@@ -15,6 +15,8 @@ export interface QueryOptions {
   resume?: string;
   model?: string;
   systemPrompt?: string;
+  /** 要执行的 CLI 可执行文件名，默认为 'qodercli' */
+  cli?: string;
   images?: Array<{
     type: "image";
     source: { type: "base64"; media_type: string; data: string };
@@ -39,7 +41,7 @@ export interface QueryResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const TEMP_DIR = join(tmpdir(), 'wechat-claude-code');
+const TEMP_DIR = join(tmpdir(), 'wechat-qoder-code');
 
 function saveImageTemp(images: NonNullable<QueryOptions['images']>): string[] {
   mkdirSync(TEMP_DIR, { recursive: true });
@@ -159,6 +161,148 @@ export function handleStreamLine(
 }
 
 // ---------------------------------------------------------------------------
+// CLI 适配器：各 CLI 的参数构建和输出解析
+// ---------------------------------------------------------------------------
+
+/**
+ * 根据 CLI 类型构建员参数数组。
+ * 返回 { spawnArgs, spawnCmd } 中 spawnCmd 是实际要 spawn 的可执行文件，
+ * spawnArgs 是传入的参数列表。
+ */
+function buildCliArgs(options: {
+  cli: string;
+  cwd: string;
+  resume?: string;
+  model?: string;
+  systemPrompt?: string;
+}): { cmd: string; args: string[] } {
+  const { cli, cwd, resume, model, systemPrompt } = options;
+
+  if (cli === 'qodercli' || cli === 'claude') {
+    // claude / qodercli: 工作目录通过 spawn 的 cwd 选项传入，CLI 本身用 -w 参数
+    const args: string[] = [
+      '-p', '-',
+      '--output-format', 'stream-json',
+      '--dangerously-skip-permissions',
+    ];
+    if (cli === 'claude') {
+      args.push('--verbose', '--include-partial-messages');
+    }
+    if (resume) args.push('--resume', resume);
+    if (model)  args.push('--model', model);
+    if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
+    // -w 指定工作目录（与 spawn cwd 保持一致）
+    args.push('-w', cwd);
+    return { cmd: cli, args };
+  }
+
+  if (cli === 'codex') {
+    // codex exec --json --dangerously-bypass-approvals-and-sandbox [-C <cwd>] [-m <model>] [resume <id>] -
+    const baseArgs: string[] = [
+      '--json',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '-C', cwd,
+    ];
+    if (model) baseArgs.push('-m', model);
+    if (resume) {
+      // codex exec [base-flags] resume <id> -
+      return { cmd: 'codex', args: ['exec', ...baseArgs, 'resume', resume, '-'] };
+    }
+    return { cmd: 'codex', args: ['exec', ...baseArgs, '-'] };
+  }
+
+  if (cli === 'opencode') {
+    // opencode run --format json --dangerously-skip-permissions [--dir <cwd>] [-m <model>] [-s <id>] -
+    const args: string[] = [
+      'run',
+      '--format', 'json',
+      '--dangerously-skip-permissions',
+      '--dir', cwd,
+    ];
+    if (model)  args.push('-m', model);
+    if (resume) args.push('--session', resume);
+    args.push('-');
+    return { cmd: 'opencode', args };
+  }
+
+  // 未知 CLI，按 claude 风格处理
+  return buildCliArgs({ ...options, cli: 'claude' });
+}
+
+/**
+ * 解析 codex JSONL 输出行。
+ * 事件类型: thread.started / turn.started / item.completed / turn.completed
+ */
+function handleCodexLine(
+  line: string,
+  state: StreamParserState,
+  callbacks: StreamParserCallbacks,
+): void {
+  if (!line.trim()) return;
+  let obj: any;
+  try { obj = JSON.parse(line); } catch { return; }
+
+  switch (obj.type) {
+    case 'thread.started':
+      if (obj.thread_id) state.sessionId = obj.thread_id;
+      break;
+    case 'item.completed': {
+      const item = obj.item;
+      // 只取 agent_message 类型的文本
+      if (item?.type === 'agent_message' && typeof item.text === 'string' && item.text) {
+        state.textParts.push(item.text);
+        if (callbacks.onText) Promise.resolve(callbacks.onText(item.text)).catch(() => {});
+      }
+      break;
+    }
+    case 'turn.completed':
+      if (callbacks.onTurnEnd) Promise.resolve(callbacks.onTurnEnd('end_turn')).catch(() => {});
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * 解析 opencode JSONL 输出行。
+ * 事件类型: step_start / text / step_finish / ...
+ */
+function handleOpencodeLine(
+  line: string,
+  state: StreamParserState,
+  callbacks: StreamParserCallbacks,
+): void {
+  if (!line.trim()) return;
+  let obj: any;
+  try { obj = JSON.parse(line); } catch { return; }
+
+  // 任意行可以提取 sessionID
+  if (obj.sessionID && !state.sessionId) state.sessionId = obj.sessionID;
+
+  switch (obj.type) {
+    case 'text': {
+      const text: string = obj.part?.text ?? '';
+      if (text) {
+        state.textParts.push(text);
+        if (callbacks.onText) Promise.resolve(callbacks.onText(text)).catch(() => {});
+      }
+      break;
+    }
+    case 'step_finish':
+      if (callbacks.onTurnEnd) {
+        const reason = obj.part?.reason ?? 'end_turn';
+        Promise.resolve(callbacks.onTurnEnd(reason)).catch(() => {});
+      }
+      break;
+    case 'error':
+      state.errorMessage = obj.error ?? obj.message ?? 'OpenCode returned an error';
+      break;
+    default:
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Core function
 // ---------------------------------------------------------------------------
 
@@ -169,33 +313,31 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     resume,
     model,
     systemPrompt,
+    cli = 'qodercli',
     images,
     onText,
     onTurnEnd,
     abortController,
   } = options;
 
-  logger.info("Starting Claude CLI query", {
+  logger.info("Starting AI CLI query", {
+    cli,
     cwd,
     model,
     resume: !!resume,
     hasImages: !!images?.length,
   });
 
-  // Build CLI arguments
-  const args: string[] = [
-    '-p', '-',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--include-partial-messages',
-    '--dangerously-skip-permissions',
-  ];
+  // 构建 CLI 参数
+  const { cmd, args } = buildCliArgs({ cli, cwd, resume, model, systemPrompt });
 
-  if (resume) args.push('--resume', resume);
-  if (model) args.push('--model', model);
-  if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
+  // 选择行解析器
+  const lineParser: (line: string, state: StreamParserState, callbacks: StreamParserCallbacks) => void =
+    cli === 'codex' ? handleCodexLine
+    : cli === 'opencode' ? handleOpencodeLine
+    : handleStreamLine;  // qodercli / claude 共用同一解析器
 
-  // Handle images: save to temp files and append paths to prompt
+  // 处理图片：保存到临时文件并拼接到 prompt
   const tempImagePaths = images?.length ? saveImageTemp(images) : [];
   let fullPrompt = prompt;
   if (tempImagePaths.length > 0) {
@@ -218,14 +360,14 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     };
 
     try {
-      child = spawn('claude', args, {
+      child = spawn(cmd, args, {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      finish({ text: '', sessionId: '', error: `Failed to spawn claude: ${msg}` });
+      finish({ text: '', sessionId: '', error: `Failed to spawn ${cmd}: ${msg}` });
       return;
     }
 
@@ -235,19 +377,19 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
 
     // Timeout
     const timeoutId = setTimeout(() => {
-      logger.warn('Claude CLI query timed out, killing process');
+      logger.warn('Qoder CLI query timed out, killing process');
       child!.kill('SIGTERM');
       const partialText = parserState.textParts.join('\n').trim();
       finish({
         text: partialText,
         sessionId: parserState.sessionId,
-        error: partialText ? undefined : 'Claude query timed out after 60 minutes',
+        error: partialText ? undefined : 'Qoder query timed out after 60 minutes',
       });
     }, QUERY_TIMEOUT_MS);
 
     // Abort handling
     const onAbort = () => {
-      logger.info('Claude CLI query aborted');
+      logger.info('Qoder CLI query aborted');
       child!.kill('SIGTERM');
       const partialText = parserState.textParts.join('\n').trim();
       finish({ text: partialText, sessionId: parserState.sessionId });
@@ -272,7 +414,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
 
     const rl = createInterface({ input: child.stdout! });
     rl.on('line', (line: string) => {
-      handleStreamLine(line, parserState, parserCallbacks);
+      lineParser(line, parserState, parserCallbacks);
     });
 
     // Handle process exit
@@ -282,17 +424,17 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
 
       if (code !== 0 && code !== null && !parserState.textParts.length && !parserState.errorMessage) {
         const stderr = stderrParts.join('').trim();
-        parserState.errorMessage = stderr || `claude exited with code ${code}`;
-        logger.error('Claude CLI exited with error', { code, stderr: stderr.slice(0, 500) });
+        parserState.errorMessage = stderr || `${cli} exited with code ${code}`;
+        logger.error('AI CLI exited with error', { cli, code, stderr: stderr.slice(0, 500) });
       }
 
       const fullText = parserState.textParts.join('\n').trim();
 
       if (!fullText && !parserState.errorMessage) {
-        parserState.errorMessage = 'Claude returned an empty response.';
+        parserState.errorMessage = `${cli} returned an empty response.`;
       }
 
-      logger.info("Claude CLI query completed", {
+      logger.info("AI CLI query completed", {
         sessionId: parserState.sessionId,
         textLength: fullText.length,
         hasError: !!parserState.errorMessage,
@@ -308,7 +450,7 @@ export async function claudeQuery(options: QueryOptions): Promise<QueryResult> {
     child.on('error', (err: Error) => {
       clearTimeout(timeoutId);
       abortController?.signal.removeEventListener('abort', onAbort);
-      finish({ text: '', sessionId: parserState.sessionId, error: `Failed to spawn claude: ${err.message}` });
+      finish({ text: '', sessionId: parserState.sessionId, error: `Failed to spawn ${cmd}: ${err.message}` });
     });
   });
 }

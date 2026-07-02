@@ -21,6 +21,7 @@ import { logger } from './logger.js';
 import { DATA_DIR } from './constants.js';
 import { MessageType, type WeixinMessage } from './wechat/types.js';
 import { loadPendingQueue, savePendingQueue, type PendingItem } from './pending-queue.js';
+import { resolveCli, detectAllCli, formatCliStatus, type CliInfo } from './cli-detector.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +176,36 @@ async function runSetup(): Promise<void> {
 
   console.log('正在设置...\n');
 
+  // ── 检测可用 CLI ──
+  const availableCli = detectAllCli();
+  if (availableCli.length === 0) {
+    console.error('\n⚠️  未检测到任何可用的 AI CLI！');
+    console.error('   请先安装下列任一：');
+    console.error('     Qoder CLI:  下载 Qoder 应用并登录，确保 qodercli 在 PATH 中');
+    console.error('     Claude CLI: npm install -g @anthropic-ai/claude-code');
+    process.exit(1);
+  }
+
+  console.log('\n检测到以下 AI CLI：');
+  for (const c of availableCli) {
+    console.log(`  • ${c.displayName}  (${c.version})`);
+  }
+  console.log();
+
+  let selectedCli: string | undefined;
+  if (availableCli.length > 1) {
+    const names = availableCli.map(c => c.cli).join(' / ');
+    const answer = await promptUser(
+      `请选择要使用的 CLI [${names}]`,
+      availableCli[0]!.cli,
+    );
+    selectedCli = availableCli.find(c => c.cli === answer.trim())?.cli ?? availableCli[0]!.cli;
+    console.log(`✅ 将使用: ${availableCli.find(c => c.cli === selectedCli)?.displayName}`);
+  } else {
+    selectedCli = availableCli[0]!.cli;
+    console.log(`✅ 将使用: ${availableCli[0]!.displayName}`);
+  }
+
   // Loop: generate QR → display → poll for scan → handle expiry → repeat
   while (true) {
     const { qrcodeUrl, qrcodeId } = await startQrLogin();
@@ -228,9 +259,10 @@ async function runSetup(): Promise<void> {
     logger.warn('Failed to clean up QR image', { path: QR_PATH });
   }
 
-  const workingDir = await promptUser('请输入工作目录', join(homedir(), 'Documents', 'ClaudeCode'));
+  const workingDir = await promptUser('请输入工作目录', join(homedir(), 'Documents', 'QoderCode'));
   const config = loadConfig();
   config.workingDirectory = workingDir;
+  if (selectedCli) config.cli = selectedCli;
   saveConfig(config);
 
   console.log('运行 npm run daemon -- start 启动服务');
@@ -248,6 +280,18 @@ async function runDaemon(): Promise<void> {
     console.error('未找到账号，请先运行 node dist/main.js setup');
     process.exit(1);
   }
+
+  // ── 检测并确定要使用的 CLI ──
+  let activeCli = resolveCli(config.cli);
+  if (!activeCli) {
+    console.error('\n⚠️  未检测到任何可用的 AI CLI！无法启动服务。');
+    console.error('   请先安装下列任一：');
+    console.error('     Qoder CLI:  下载 Qoder 应用并登录，确保 qodercli 在 PATH 中');
+    console.error('     Claude CLI: npm install -g @anthropic-ai/claude-code');
+    process.exit(1);
+  }
+  const allCli = detectAllCli();
+  console.log(formatCliStatus(allCli, activeCli));
 
   const api = new WeChatApi(account.botToken, account.baseUrl);
   const sessionStore = createSessionStore();
@@ -270,6 +314,15 @@ async function runDaemon(): Promise<void> {
   const sharedCtx = { lastContextToken: '' };
   const activeControllers = new Map<string, AbortController>();
 
+  /** 运行时切换 CLI，同时更新 activeCli，返回新 CLI 的 displayName，失败返回 null */
+  function switchCliCallback(cliName: string): string | null {
+    const next = resolveCli(cliName);
+    if (!next) return null;
+    activeCli = next;
+    logger.info('CLI switched', { cli: next.cli, version: next.version });
+    return next.displayName;
+  }
+
   // -- Message queue for serial processing --
   const messageQueue: WeixinMessage[] = [];
   let processingQueue = false;
@@ -279,7 +332,7 @@ async function runDaemon(): Promise<void> {
     processingQueue = true;
     while (messageQueue.length > 0) {
       const msg = messageQueue.shift()!;
-      await handleMessage(msg, account!, session, sessionStore, sender, config, sharedCtx, activeControllers, messageQueue);
+      await handleMessage(msg, account!, session, sessionStore, sender, config, activeCli!, sharedCtx, activeControllers, messageQueue, switchCliCallback);
     }
     processingQueue = false;
   }
@@ -330,8 +383,8 @@ async function runDaemon(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  logger.info('Daemon started', { accountId: account.accountId });
-  console.log(`已启动 (账号: ${account.accountId})`);
+  logger.info('Daemon started', { accountId: account.accountId, cli: activeCli.cli });
+  console.log(`已启动 (账号: ${account.accountId}，使用: ${activeCli.displayName})`);
 
   await monitor.run();
 }
@@ -347,9 +400,11 @@ async function handleMessage(
   sessionStore: ReturnType<typeof createSessionStore>,
   sender: ReturnType<typeof createSender>,
   config: ReturnType<typeof loadConfig>,
+  activeCli: CliInfo,
   sharedCtx: { lastContextToken: string },
   activeControllers: Map<string, AbortController>,
   messageQueue: WeixinMessage[],
+  switchCli?: (cliName: string) => string | null,
 ): Promise<void> {
   // Filter: only user messages with required fields
   if (msg.message_type !== MessageType.USER) return;
@@ -389,6 +444,7 @@ async function handleMessage(
       clearSession: () => sessionStore.clear(account.accountId),
       getChatHistoryText: (limit?: number) => sessionStore.getChatHistoryText(session, limit),
       text: userText,
+      switchCli,
     };
 
     const result: CommandResult = routeCommand(ctx);
@@ -401,7 +457,7 @@ async function handleMessage(
     if (result.handled && result.claudePrompt) {
       await sendToClaude(
         result.claudePrompt, imageItem, fileItem, fromUserId, contextToken,
-        account, session, sessionStore, sender, config, activeControllers,
+        account, session, sessionStore, sender, config, activeCli, activeControllers,
       );
       return;
     }
@@ -425,7 +481,7 @@ async function handleMessage(
 
   await sendToClaude(
     userText, imageItem, fileItem, fromUserId, contextToken,
-    account, session, sessionStore, sender, config, activeControllers,
+    account, session, sessionStore, sender, config, activeCli, activeControllers,
   );
 }
 
@@ -489,6 +545,7 @@ async function sendToClaude(
   sessionStore: ReturnType<typeof createSessionStore>,
   sender: ReturnType<typeof createSender>,
   config: ReturnType<typeof loadConfig>,
+  activeCli: CliInfo,
   activeControllers: Map<string, AbortController>,
 ): Promise<void> {
   // Set state to processing
@@ -614,6 +671,7 @@ async function sendToClaude(
       cwd: (session.workingDirectory || config.workingDirectory).replace(/^~/, homedir()),
       resume: session.sdkSessionId,
       model: session.model,
+      cli: activeCli.cli,
       systemPrompt: [
         '你正在通过微信与用户对话，不是在终端里。不要让用户去终端操作。如果用户需要文件，直接输出文件地址就行，会自动识别解析推送文件到用户的微信中。',
         config.systemPrompt,
@@ -706,7 +764,7 @@ async function sendToClaude(
     // Send result back to WeChat
     if (result.text) {
       if (result.error) {
-        logger.warn('Claude query had error but returned text, using text', { error: result.error });
+        logger.warn('Qoder query had error but returned text, using text', { error: result.error });
       }
       sessionStore.addChatMessage(session, 'assistant', result.text);
       // If nothing was streamed at all (e.g. streaming not supported), send full text now
@@ -717,10 +775,10 @@ async function sendToClaude(
         }
       }
     } else if (result.error) {
-      logger.error('Claude query error', { error: result.error });
-      await sender.sendText(fromUserId, contextToken, 'Claude 处理请求时出错，请稍后重试。');
+      logger.error('Qoder query error', { error: result.error });
+      await sender.sendText(fromUserId, contextToken, 'Qoder 处理请求时出错，请稍后重试。');
     } else if (!anySent) {
-      await sender.sendText(fromUserId, contextToken, 'Claude 无返回内容（可能因权限被拒而终止）');
+      await sender.sendText(fromUserId, contextToken, 'Qoder 无返回内容（可能因权限被拒而终止）');
     }
 
     // Update session with new SDK session ID
@@ -776,10 +834,10 @@ async function sendToClaude(
     const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'));
     if (isAbort) {
       // Query was cancelled by a new incoming message — exit silently
-      logger.info('Claude query aborted by new message');
+      logger.info('Qoder query aborted by new message');
     } else {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      logger.error('Error in sendToClaude', { error: errorMsg });
+      logger.error('Error in sendToQoder', { error: errorMsg });
       await sender.sendText(fromUserId, contextToken, '处理消息时出错，请稍后重试。');
     }
     session.state = 'idle';

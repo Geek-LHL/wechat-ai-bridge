@@ -6,6 +6,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, basename, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { detectAllCli } from '../cli-detector.js';
 
 const HELP_TEXT = `可用命令：
 
@@ -24,15 +25,16 @@ const HELP_TEXT = `可用命令：
 
 配置：
   /cwd [路径]       查看或切换工作目录
-  /model [名称]     查看或切换 Claude 模型
+  /model [名称]     查看或切换模型
   /prompt [内容]    查看或设置系统提示词（全局生效）
+  /cli [名称]       查看或切换 AI CLI（qodercli / claude / codex / opencode）
 
 其他：
   /skills [full]    列出已安装的 skill（full 显示描述）
   /version          查看版本信息
   /<skill> [参数]   触发已安装的 skill
 
-直接输入文字即可与 Claude Code 对话`;
+直接输入文字即可与 Qoder 对话`;
 
 // 缓存 skill 列表，避免每次命令都扫描文件系统
 let cachedSkills: SkillInfo[] | null = null;
@@ -168,9 +170,9 @@ export function handleVersion(): CommandResult {
     const __dirname = fileURLToPath(new URL('.', import.meta.url));
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
     const version = pkg.version || 'unknown';
-    return { reply: `wechat-claude-code v${version}`, handled: true };
+    return { reply: `wechat-qoder-code v${version}`, handled: true };
   } catch {
-    return { reply: 'wechat-claude-code (version unknown)', handled: true };
+    return { reply: 'wechat-qoder-code (version unknown)', handled: true };
   }
 }
 
@@ -215,6 +217,62 @@ export function handleSend(ctx: CommandContext, args: string): CommandResult {
   }
 
   return { handled: true, sendFile: resolved };
+}
+
+/** 查看或切换 AI CLI */
+export function handleCli(ctx: CommandContext, args: string): CommandResult {
+  const available = detectAllCli();
+  const arg = args.trim().toLowerCase();
+
+  // 无参数：显示当前状态
+  if (!arg) {
+    const config = loadConfig();
+    const currentCli = config.cli || 'qodercli';
+    const lines = ['🤖 AI CLI 状态', ''];
+    if (available.length === 0) {
+      lines.push('未检测到任何可用的 CLI');
+    } else {
+      for (const c of available) {
+        const isCurrent = c.cli === currentCli;
+        lines.push(`  ${isCurrent ? '✅ 使用中' : '  可用  '}  ${c.displayName}  (${c.version})`);
+      }
+    }
+    lines.push('');
+    lines.push('切换命令:');
+    lines.push('  /cli qodercli   — 切换到 Qoder CLI');
+    lines.push('  /cli claude     — 切换到 Claude CLI');
+    lines.push('  /cli codex      — 切换到 Codex CLI');
+    lines.push('  /cli opencode   — 切换到 OpenCode');
+    return { reply: lines.join('\n'), handled: true };
+  }
+
+  // 有参数：切换 CLI
+  const VALID = ['qodercli', 'claude', 'codex', 'opencode'];
+  if (!VALID.includes(arg)) {
+    return { reply: `❌ 无效的 CLI 名称: ${arg}\n支持: qodercli / claude / codex / opencode`, handled: true };
+  }
+
+  // 检查目标 CLI 是否可用
+  const target = available.find(c => c.cli === arg);
+  if (!target) {
+    return { reply: `❌ ${arg} 未安装或不在 PATH 中，无法切换`, handled: true };
+  }
+
+  if (!ctx.switchCli) {
+    return { reply: '❌ 当前模式不支持运行时切换 CLI', handled: true };
+  }
+
+  const result = ctx.switchCli(arg);
+  if (!result) {
+    return { reply: `❌ 切换失败`, handled: true };
+  }
+
+  // 持久化到配置文件
+  const config = loadConfig();
+  config.cli = arg;
+  saveConfig(config);
+
+  return { reply: `✅ 已切换到 ${target.displayName} (${target.version})\n下次对话起生效，配置已保存`, handled: true };
 }
 
 export function handleUnknown(cmd: string, args: string): CommandResult {

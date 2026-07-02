@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # =============================================================================
-# wechat-claude-code cross-platform daemon manager
+# wechat-qoder-code cross-platform daemon manager
 # Supports: macOS (launchd) / Linux (systemd + nohup fallback)
 # =============================================================================
 
-DATA_DIR="${HOME}/.wechat-claude-code"
+DATA_DIR="${HOME}/.wechat-qoder-code"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SERVICE_NAME="wechat-claude-code"
+SERVICE_NAME="wechat-qoder-code"
 
 # Platform detection
 OS_TYPE="$(uname -s)"
@@ -18,7 +18,7 @@ OS_TYPE="$(uname -s)"
 # =============================================================================
 
 macos_plist_label() {
-  echo "com.wechat-claude-code.bridge"
+  echo "com.wechat-qoder-code.bridge"
 }
 
 macos_plist_path() {
@@ -43,6 +43,14 @@ macos_start() {
 
   # Collect Anthropic/Claude env vars for plist
   local plist_extra_env=""
+  # Essential user environment variables for qodercli/claude to function correctly
+  for var in HOME USER LOGNAME SHELL TMPDIR LANG; do
+    if [ -n "${!var:-}" ]; then
+      plist_extra_env="${plist_extra_env}    <key>${var}</key>
+    <string>${!var}</string>
+"
+    fi
+  done
   for var in ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL CLAUDE_API_KEY; do
     if [ -n "${!var:-}" ]; then
       plist_extra_env="${plist_extra_env}    <key>${var}</key>
@@ -77,14 +85,14 @@ macos_start() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${HOME}/.local/bin:${node_bin%/*}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <string>${HOME}/.local/bin:${HOME}/.opencode/bin:${node_bin%/*}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
 ${plist_extra_env}  </dict>
 </dict>
 </plist>
 PLIST
 
   launchctl load "$plist_path"
-  echo "Started wechat-claude-code daemon (macOS launchd)"
+  echo "Started wechat-qoder-code daemon (macOS launchd)"
 }
 
 macos_stop() {
@@ -93,7 +101,7 @@ macos_stop() {
 
   launchctl bootout "gui/$(id -u)/${plist_label}" 2>/dev/null || true
   rm -f "$plist_path"
-  echo "Stopped wechat-claude-code daemon (macOS launchd)"
+  echo "Stopped wechat-qoder-code daemon (macOS launchd)"
 }
 
 macos_status() {
@@ -185,7 +193,7 @@ linux_create_service_file() {
   cat > "$service_file" <<SERVICE
 [Unit]
 Description=WeChat Claude Code Bridge
-Documentation=https://github.com/Wechat-ggGitHub/wechat-claude-code
+Documentation=https://github.com/Wechat-ggGitHub/wechat-qoder-code
 After=network.target
 
 [Service]
@@ -227,7 +235,7 @@ linux_direct_start() {
 
   mkdir -p "$DATA_DIR/logs"
 
-  echo "Starting wechat-claude-code daemon (direct mode)..."
+  echo "Starting wechat-qoder-code daemon (direct mode)..."
   nohup "$node_bin" "${PROJECT_DIR}/dist/main.js" start \
     >> "$DATA_DIR/logs/stdout.log" \
     2>> "$DATA_DIR/logs/stderr.log" &
@@ -304,7 +312,7 @@ linux_start() {
 
     systemctl --user start "${SERVICE_NAME}"
     systemctl --user enable "${SERVICE_NAME}" 2>/dev/null || true
-    echo "Started wechat-claude-code daemon (Linux systemd)"
+    echo "Started wechat-qoder-code daemon (Linux systemd)"
   else
     echo "Note: systemd user session not available, using direct mode"
     echo "To enable systemd mode, run: 'loginctl enable-linger $(whoami)'"
@@ -317,7 +325,7 @@ linux_stop() {
   if linux_systemd_available && systemctl --user cat "${SERVICE_NAME}" &>/dev/null; then
     systemctl --user stop "${SERVICE_NAME}" 2>/dev/null || true
     systemctl --user disable "${SERVICE_NAME}" 2>/dev/null || true
-    echo "Stopped wechat-claude-code daemon (Linux systemd)"
+    echo "Stopped wechat-qoder-code daemon (Linux systemd)"
   else
     linux_direct_stop
   fi

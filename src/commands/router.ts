@@ -1,7 +1,7 @@
 import type { Session } from '../session.js';
 import { findSkill } from '../claude/skill-scanner.js';
 import { logger } from '../logger.js';
-import { handleHelp, handleClear, handleCwd, handleModel, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleUndo, handleVersion, handlePrompt, handleSend, handleUnknown } from './handlers.js';
+import { handleHelp, handleClear, handleCwd, handleModel, handleStatus, handleSkills, handleHistory, handleReset, handleCompact, handleUndo, handleVersion, handlePrompt, handleSend, handleCli, handleUnknown } from './handlers.js';
 
 export interface CommandContext {
   accountId: string;
@@ -10,6 +10,8 @@ export interface CommandContext {
   clearSession: () => Session;
   getChatHistoryText?: (limit?: number) => string;
   text: string;
+  /** 切换 CLI 的回调，返回切换后的 CLI 名称，切换失败返回 null */
+  switchCli?: (cliName: string) => string | null;
 }
 
 export interface CommandResult {
@@ -71,6 +73,8 @@ export function routeCommand(ctx: CommandContext): CommandResult {
     case 'version':
     case 'v':
       return handleVersion();
+    case 'cli':
+      return handleCli(ctx, args);
     default:
       return handleUnknown(cmd, args);
   }

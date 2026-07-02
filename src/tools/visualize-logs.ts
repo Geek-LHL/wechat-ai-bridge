@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Log Visualizer for wechat-claude-code
+ * Log Visualizer for wechat-qoder-code
  *
- * Generates a self-contained HTML page that compares Claude CLI's original
+ * Generates a self-contained HTML page that compares Qoder CLI's original
  * output with what the user actually saw in WeChat.
  *
  * Usage:
@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 
-const DATA_DIR = process.env.WCC_DATA_DIR || join(homedir(), '.wechat-claude-code');
+const DATA_DIR = process.env.WCC_DATA_DIR || join(homedir(), '.wechat-qoder-code');
 
 // ─── Keepalive messages (must match main.ts SILENCE_MESSAGES) ───
 const SILENCE_MESSAGES = new Set([
@@ -196,7 +196,7 @@ function reconstructSessions(lines: ParsedLine[]): Session[] {
     }
 
     // Query start
-    if (line.message === 'Starting' && line.raw?.includes('Claude CLI query')) {
+    if (line.message === 'Starting' && line.raw?.includes('Qoder CLI query')) {
       const data = tryParseJson(line.raw.replace(/^.*?\{/, '{'));
       current = {
         index: sessions.length + 1,
@@ -219,7 +219,7 @@ function reconstructSessions(lines: ParsedLine[]): Session[] {
     }
 
     // Query completed
-    if (line.message === 'Claude' && line.raw?.includes('CLI query completed')) {
+    if (line.message === 'Qoder' && line.raw?.includes('CLI query completed')) {
       if (current) {
         current.endTime = line.timestamp;
         const start = new Date(current.startTime).getTime();
@@ -237,7 +237,7 @@ function reconstructSessions(lines: ParsedLine[]): Session[] {
     }
 
     // Query aborted
-    if (line.message === 'Claude' && line.raw?.includes('CLI query aborted')) {
+    if (line.message === 'Qoder' && line.raw?.includes('CLI query aborted')) {
       if (current) {
         current.endTime = line.timestamp;
         const start = new Date(current.startTime).getTime();
@@ -250,7 +250,7 @@ function reconstructSessions(lines: ParsedLine[]): Session[] {
     }
 
     // Query timed out
-    if (line.message === 'Claude' && line.raw?.includes('query timed out')) {
+    if (line.message === 'Qoder' && line.raw?.includes('query timed out')) {
       if (current) {
         current.hasError = true;
       }
@@ -433,9 +433,9 @@ function renderDiff(segments: DiffSegment[]): string {
     if (seg.type === 'same') {
       html += text;
     } else if (seg.type === 'lost') {
-      html += `<span class="diff-lost" title="Claude 输出了但未发送到微信">${text}</span>`;
+      html += `<span class="diff-lost" title="Qoder 输出了但未发送到微信">${text}</span>`;
     } else {
-      html += `<span class="diff-extra" title="微信收到了但 Claude 未输出">${text}</span>`;
+      html += `<span class="diff-extra" title="微信收到了但 Qoder 未输出">${text}</span>`;
     }
   }
   return html;
@@ -452,7 +452,7 @@ function generateHtml(sessions: Session[], date: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WeChat-Claude-Code Log Viewer — ${esc(date)}</title>
+<title>WeChat-Qoder-Code Log Viewer — ${esc(date)}</title>
 <style>
   :root {
     --bg: #f0f2f5;
@@ -564,7 +564,7 @@ function generateHtml(sessions: Session[], date: string): string {
 </style>
 </head>
 <body>
-<h1>WeChat-Claude-Code Log Viewer</h1>
+<h1>WeChat-Qoder-Code Log Viewer</h1>
 <p class="subtitle">${esc(date)} — ${sessions.length} 个会话</p>
 
 <div class="stats">
@@ -679,7 +679,7 @@ function renderSessionCard(s: Session): string {
       <div class="section-content">${s.userMessages.map(m => esc(m.text)).join('\n') || '(无)'}</div>
     </div>
     <div class="section">
-      <div class="section-title claude">Claude 完整输出${s.claudeFullOutput ? ` <span class="char-count">${s.claudeFullOutput.length} chars</span>` : ''}</div>
+      <div class="section-title claude">Qoder 完整输出${s.claudeFullOutput ? ` <span class="char-count">${s.claudeFullOutput.length} chars</span>` : ''}</div>
       ${claudeHtml}
     </div>
     <div class="section">
