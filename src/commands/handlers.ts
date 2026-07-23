@@ -1,5 +1,5 @@
 import type { CommandContext, CommandResult } from './router.js';
-import { scanAllSkills, formatSkillList, findSkill, type SkillInfo } from '../claude/skill-scanner.js';
+import { scanAllSkills, formatSkillList, findSkill, filterSkillsBySource, type SkillInfo } from '../claude/skill-scanner.js';
 import { loadConfig, saveConfig } from '../config.js';
 import { DEFAULT_WORKING_DIR } from '../constants.js';
 import { readFileSync, existsSync, statSync } from 'node:fs';
@@ -30,7 +30,7 @@ const HELP_TEXT = `可用命令：
   /cli [名称]       查看或切换 AI CLI（qodercli / claude / codex / opencode）
 
 其他：
-  /skills [full]    列出已安装的 skill（full 显示描述）
+  /skills [full]    列出已安装的 skill（支持按 CLI 筛选：claude / qodercli / codex / opencode）
   /version          查看版本信息
   /<skill> [参数]   触发已安装的 skill
 
@@ -94,20 +94,64 @@ export function handleStatus(ctx: CommandContext): CommandResult {
   return { reply: lines.join('\n'), handled: true };
 }
 
+const CLI_DISPLAY_NAMES: Record<string, string> = {
+  claude: 'Claude',
+  qodercli: 'Qoder',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
+
 export function handleSkills(args: string): CommandResult {
   invalidateSkillCache();
-  const skills = getSkills();
-  if (skills.length === 0) {
+  const allSkills = getSkills();
+  if (allSkills.length === 0) {
     return { reply: '未找到已安装的 skill。', handled: true };
   }
 
-  const showFull = args.trim().toLowerCase() === 'full';
-  if (showFull) {
-    const lines = skills.map(s => `/${s.name}\n   ${s.description}`);
-    return { reply: `📋 已安装的 Skill (${skills.length}):\n\n${lines.join('\n\n')}`, handled: true };
+  const argParts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const showFull = argParts.includes('full');
+  const filterCli = argParts.find(a => a !== 'full' && a in CLI_DISPLAY_NAMES);
+
+  let skills = allSkills;
+  if (filterCli) {
+    skills = filterSkillsBySource(allSkills, filterCli);
   }
-  const lines = skills.map(s => `/${s.name}`);
-  return { reply: `📋 已安装的 Skill (${skills.length}):\n\n${lines.join('\n')}\n\n使用 /skills full 查看完整描述`, handled: true };
+
+  if (skills.length === 0) {
+    const cliName = CLI_DISPLAY_NAMES[filterCli!] || filterCli;
+    return { reply: `${cliName} 未找到已安装的 skill。`, handled: true };
+  }
+
+  // Group by source
+  const grouped = new Map<string, SkillInfo[]>();
+  for (const skill of skills) {
+    const list = grouped.get(skill.source) || [];
+    list.push(skill);
+    grouped.set(skill.source, list);
+  }
+
+  const sections: string[] = [];
+  for (const [source, sourceSkills] of grouped) {
+    const displayName = CLI_DISPLAY_NAMES[source] || source;
+    const header = filterCli ? '' : `── ${displayName} (${sourceSkills.length}) ──`;
+    const lines = showFull
+      ? sourceSkills.map(s => `/${s.name}\n   ${s.description}`)
+      : sourceSkills.map(s => `/${s.name}`);
+
+    if (header) {
+      sections.push(`${header}\n${lines.join('\n\n')}`);
+    } else {
+      sections.push(lines.join('\n\n'));
+    }
+  }
+
+  const title = filterCli
+    ? `📋 ${CLI_DISPLAY_NAMES[filterCli]} 已安装 Skill (${skills.length})`
+    : `📋 所有已安装 Skill (${skills.length})`;
+  const body = sections.join('\n\n');
+  const hint = showFull ? '' : '\n\n使用 /skills full 查看完整描述\n使用 /skills <cli> 筛选（claude / qodercli / codex / opencode）';
+
+  return { reply: `${title}:\n\n${body}${hint}`, handled: true };
 }
 
 const MAX_HISTORY_LIMIT = 100;
